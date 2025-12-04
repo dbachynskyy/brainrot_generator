@@ -52,7 +52,10 @@ class DiscoveryAgent:
         min_growth_rate: float = None
     ) -> List[VideoMetadata]:
         """
-        Discover trending YouTube Shorts.
+        Discover trending YouTube Shorts by finding channels with explosive growth.
+        
+        Strategy: Find channels that recently started posting shorts and had explosive growth,
+        then analyze their successful videos to understand what made them go viral.
         
         Args:
             max_videos: Maximum number of videos to discover
@@ -64,28 +67,22 @@ class DiscoveryAgent:
         max_videos = max_videos or settings.max_videos_to_scrape
         min_growth_rate = min_growth_rate or settings.min_growth_rate
         
-        logger.info(f"Discovering trending Shorts (max: {max_videos}, min_growth: {min_growth_rate})")
+        logger.info(f"Discovering trending Shorts via breakout channel analysis (max: {max_videos})")
         
-        # Strategy 1: Use YouTube API to search for Shorts
-        api_videos = await self._search_shorts_via_api(max_videos)
-        logger.info(f"Found {len(api_videos)} videos via YouTube API")
+        # NEW STRATEGY: Find channels with explosive growth from recent shorts
+        breakout_videos = await self._find_breakout_channel_shorts(max_videos)
+        logger.info(f"Found {len(breakout_videos)} videos from breakout channels")
         
-        # Strategy 2: Use Playwright to scrape Shorts page for additional data
-        scraped_videos = await self._scrape_shorts_page()
-        logger.info(f"Found {len(scraped_videos)} videos via Playwright scraping")
+        # Fallback: Use traditional search if breakout discovery doesn't find enough
+        if len(breakout_videos) < max_videos // 2:
+            logger.info("Not enough breakout videos found, supplementing with traditional search")
+            api_videos = await self._search_shorts_via_api(max_videos // 2)
+            logger.info(f"Found {len(api_videos)} videos via traditional API search")
+            breakout_videos.extend(api_videos)
         
-        # Combine and deduplicate
-        all_videos = self._merge_video_data(api_videos, scraped_videos)
-        logger.info(f"Total unique videos after merge: {len(all_videos)}")
-        
-        # Filter by growth rate and engagement
-        # For MVP, use lenient filtering - just remove videos with very low engagement
-        # Skip the complex channel API calls that might be failing
-        trending_videos = [v for v in all_videos if v.view_count > 1000]  # Simple threshold
-        logger.info(f"After simple filtering (views > 1000): {len(trending_videos)} videos remain")
-        
-        # Skip growth rate filtering for MVP - it's too strict and makes too many API calls
-        # Just use view count and virality ranking
+        # Filter for English and quality
+        trending_videos = [v for v in breakout_videos if v.view_count > 1000]
+        logger.info(f"After filtering (views > 1000): {len(trending_videos)} videos remain")
         
         # Rank by virality score
         ranked_videos = self._rank_by_virality(trending_videos)
@@ -94,6 +91,241 @@ class DiscoveryAgent:
         result = ranked_videos[:max_videos]
         logger.info(f"Returning {len(result)} videos (requested max: {max_videos})")
         return result
+    
+    async def _find_breakout_channel_shorts(self, max_videos: int) -> List[VideoMetadata]:
+        """
+        Find videos from channels that had explosive growth after posting shorts.
+        
+        Strategy:
+        1. Search for recent popular shorts
+        2. Get their channel IDs
+        3. Check channel statistics (subscriber count, video count, recent growth)
+        4. Identify channels that are "breaking out" (recent subscriber spike, few total videos)
+        5. Get their recent shorts
+        """
+        videos = []
+        
+        if not self.youtube_api:
+            logger.warning("YouTube API not available, skipping breakout channel discovery")
+            return videos
+        
+        try:
+            # Step 1: Find recent popular shorts to get channel IDs
+            logger.info("Step 1: Finding recent popular shorts to identify channels...")
+            search_request = self.youtube_api.search().list(
+                part='snippet',
+                q='#shorts',
+                type='video',
+                maxResults=50,  # Get more to find diverse channels
+                order='viewCount',
+                videoDuration='short',
+                relevanceLanguage='en',
+                publishedAfter=(datetime.now() - timedelta(days=14)).isoformat() + 'Z'  # Last 2 weeks
+            )
+            
+            search_response = search_request.execute()
+            
+            # Collect unique channel IDs
+            channel_ids = set()
+            for item in search_response.get('items', []):
+                channel_id = item['snippet'].get('channelId')
+                if channel_id:
+                    channel_ids.add(channel_id)
+            
+            logger.info(f"Found {len(channel_ids)} unique channels from recent shorts")
+            
+            # Step 2: Analyze channels to find "breakout" ones
+            logger.info("Step 2: Analyzing channels for breakout patterns...")
+            breakout_channels = []
+            
+            # Process channels in batches (YouTube API limit is 50 per request)
+            channel_list = list(channel_ids)
+            for i in range(0, min(len(channel_list), 50), 50):  # Limit to 50 to avoid quota issues
+                batch = channel_list[i:i+50]
+                
+                # Get channel statistics
+                channels_request = self.youtube_api.channels().list(
+                    part='snippet,statistics,contentDetails',
+                    id=','.join(batch)
+                )
+                channels_response = channels_request.execute()
+                
+                for channel_data in channels_response.get('items', []):
+                    stats = channel_data.get('statistics', {})
+                    snippet = channel_data.get('snippet', {})
+                    
+                    subscriber_count = int(stats.get('subscriberCount', 0))
+                    video_count = int(stats.get('videoCount', 0))
+                    view_count = int(stats.get('viewCount', 0))
+                    
+                    # Identify breakout channels:
+                    # - Recent growth (subscriber count suggests recent spike)
+                    # - Small-medium size (10K-500K subscribers - sweet spot for breakout)
+                    # - Few videos relative to subscribers (high sub-to-video ratio = explosive growth)
+                    # - High view-to-sub ratio (viral content)
+                    
+                    if subscriber_count < 1000 or subscriber_count > 2000000:  # Skip too small or too large
+                        continue
+                    
+                    if video_count == 0:
+                        continue
+                    
+                    # Calculate ratios
+                    sub_to_video_ratio = subscriber_count / max(video_count, 1)
+                    view_to_sub_ratio = view_count / max(subscriber_count, 1)
+                    
+                    # Breakout indicators:
+                    # - High sub-to-video ratio (>100 = each video brought many subs)
+                    # - High view-to-sub ratio (>50 = viral reach)
+                    # - Recent channel (created in last 2 years)
+                    
+                    created_at = snippet.get('publishedAt', '')
+                    if created_at:
+                        try:
+                            created_date = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                            days_old = (datetime.now(created_date.tzinfo) - created_date).days
+                            
+                            # Prefer channels created in last 2 years
+                            if days_old > 730:
+                                continue
+                        except:
+                            pass
+                    
+                    # Score breakout potential
+                    breakout_score = 0
+                    if sub_to_video_ratio > 100:
+                        breakout_score += 3
+                    elif sub_to_video_ratio > 50:
+                        breakout_score += 2
+                    elif sub_to_video_ratio > 20:
+                        breakout_score += 1
+                    
+                    if view_to_sub_ratio > 100:
+                        breakout_score += 2
+                    elif view_to_sub_ratio > 50:
+                        breakout_score += 1
+                    
+                    # Prefer channels with 10-500K subs (sweet spot)
+                    if 10000 <= subscriber_count <= 500000:
+                        breakout_score += 2
+                    elif 1000 <= subscriber_count < 10000:
+                        breakout_score += 1
+                    
+                    if breakout_score >= 3:  # Minimum threshold
+                        breakout_channels.append({
+                            'channel_id': channel_data['id'],
+                            'channel_title': snippet.get('title', ''),
+                            'subscriber_count': subscriber_count,
+                            'video_count': video_count,
+                            'breakout_score': breakout_score,
+                            'sub_to_video_ratio': sub_to_video_ratio,
+                            'view_to_sub_ratio': view_to_sub_ratio
+                        })
+                        logger.info(f"Found breakout channel: {snippet.get('title', 'Unknown')} "
+                                  f"(subs: {subscriber_count:,}, videos: {video_count}, "
+                                  f"score: {breakout_score}, sub/video: {sub_to_video_ratio:.1f})")
+            
+            # Sort by breakout score
+            breakout_channels.sort(key=lambda x: x['breakout_score'], reverse=True)
+            logger.info(f"Identified {len(breakout_channels)} breakout channels")
+            
+            # Step 3: Get recent shorts from breakout channels
+            logger.info("Step 3: Getting recent shorts from breakout channels...")
+            for channel_info in breakout_channels[:10]:  # Limit to top 10 breakout channels
+                channel_id = channel_info['channel_id']
+                
+                try:
+                    # Get channel's uploads playlist
+                    channels_request = self.youtube_api.channels().list(
+                        part='contentDetails',
+                        id=channel_id
+                    )
+                    channels_response = channels_request.execute()
+                    
+                    if not channels_response.get('items'):
+                        continue
+                    
+                    uploads_playlist_id = channels_response['items'][0]['contentDetails']['relatedPlaylists']['uploads']
+                    
+                    # Get recent videos from uploads playlist
+                    playlist_request = self.youtube_api.playlistItems().list(
+                        part='snippet,contentDetails',
+                        playlistId=uploads_playlist_id,
+                        maxResults=10  # Get last 10 videos
+                    )
+                    playlist_response = playlist_request.execute()
+                    
+                    # Get video IDs
+                    video_ids = [item['contentDetails']['videoId'] for item in playlist_response.get('items', [])]
+                    
+                    if not video_ids:
+                        continue
+                    
+                    # Get video details (filter for shorts)
+                    videos_request = self.youtube_api.videos().list(
+                        part='snippet,statistics,contentDetails',
+                        id=','.join(video_ids)
+                    )
+                    videos_response = videos_request.execute()
+                    
+                    for video_data in videos_response.get('items', []):
+                        snippet = video_data['snippet']
+                        stats = video_data['statistics']
+                        content_details = video_data.get('contentDetails', {})
+                        
+                        # Check if it's a short (duration < 60 seconds or has #shorts in title)
+                        duration_str = content_details.get('duration', '')
+                        is_short = duration_str and self._parse_duration(duration_str) <= 60
+                        title_lower = snippet.get('title', '').lower()
+                        has_shorts_tag = '#shorts' in title_lower or 'short' in title_lower
+                        
+                        if not (is_short or has_shorts_tag):
+                            continue
+                        
+                        # Language filtering
+                        default_language = snippet.get('defaultLanguage', '').lower()
+                        default_audio_language = snippet.get('defaultAudioLanguage', '').lower()
+                        
+                        if default_language and default_language not in ['en', 'en-us', 'en-gb']:
+                            continue
+                        if default_audio_language and default_audio_language not in ['en', 'en-us', 'en-gb']:
+                            continue
+                        
+                        video_id = video_data['id']
+                        videos.append(VideoMetadata(
+                            video_id=video_id,
+                            url=f"https://www.youtube.com/shorts/{video_id}",
+                            title=snippet.get('title', ''),
+                            description=snippet.get('description', ''),
+                            channel_id=channel_id,
+                            channel_name=snippet.get('channelTitle', ''),
+                            view_count=int(stats.get('viewCount', 0)),
+                            like_count=int(stats.get('likeCount', 0)),
+                            upload_time=datetime.fromisoformat(
+                                snippet['publishedAt'].replace('Z', '+00:00')
+                            ),
+                            hashtags=self._extract_hashtags(snippet.get('description', '')),
+                            default_language=default_language or None,
+                            default_audio_language=default_audio_language or None,
+                            duration=self._parse_duration(duration_str)
+                        ))
+                        
+                        if len(videos) >= max_videos:
+                            break
+                    
+                    if len(videos) >= max_videos:
+                        break
+                        
+                except Exception as e:
+                    logger.warning(f"Error getting videos from channel {channel_id}: {e}")
+                    continue
+            
+            logger.info(f"Collected {len(videos)} videos from {len(breakout_channels)} breakout channels")
+            
+        except Exception as e:
+            logger.error(f"Error in breakout channel discovery: {e}", exc_info=True)
+        
+        return videos
     
     async def _search_shorts_via_api(self, max_results: int) -> List[VideoMetadata]:
         """Search for Shorts using YouTube Data API."""
@@ -104,15 +336,41 @@ class DiscoveryAgent:
             return videos
         
         try:
+            # Search for Shorts with variety - use different search terms and orders
+            import random
+            
+            # Vary search terms to get different results
+            search_terms = [
+                '#shorts',
+                'shorts',
+                'short video',
+                'viral shorts',
+                'trending shorts',
+                'funny shorts',
+                'comedy shorts'
+            ]
+            search_term = random.choice(search_terms)
+            
+            # Vary sort order to get different results
+            sort_orders = ['viewCount', 'rating', 'relevance', 'date']
+            sort_order = random.choice(sort_orders)
+            
+            # Vary time range to get fresher content
+            days_back = random.choice([1, 2, 3, 5, 7])
+            
+            logger.info(f"Searching with term: '{search_term}', order: '{sort_order}', days: {days_back}")
+            
             # Search for Shorts (duration < 4 minutes, typically < 60 seconds)
+            # Filter for English language only
             request = self.youtube_api.search().list(
                 part='snippet',
-                q='#shorts',
+                q=search_term,
                 type='video',
                 maxResults=min(max_results, 50),
-                order='viewCount',
+                order=sort_order,
                 videoDuration='short',
-                publishedAfter=(datetime.now() - timedelta(days=7)).isoformat() + 'Z'
+                relevanceLanguage='en',  # Prefer English content
+                publishedAfter=(datetime.now() - timedelta(days=days_back)).isoformat() + 'Z'
             )
             
             response = request.execute()
@@ -130,6 +388,53 @@ class DiscoveryAgent:
                     video_data = video_details['items'][0]
                     snippet = video_data['snippet']
                     stats = video_data['statistics']
+                    
+                    # Filter for English language videos only - STRICT FILTERING
+                    default_language = snippet.get('defaultLanguage', '').lower()
+                    default_audio_language = snippet.get('defaultAudioLanguage', '').lower()
+                    title = snippet.get('title', '').lower()
+                    description = snippet.get('description', '').lower()
+                    
+                    # Check 1: Explicit language tags (must be English if set)
+                    if default_language and default_language not in ['en', 'en-us', 'en-gb']:
+                        logger.info(f"Skipping video {video_id}: explicit language={default_language} (not English)")
+                        continue
+                    if default_audio_language and default_audio_language not in ['en', 'en-us', 'en-gb']:
+                        logger.info(f"Skipping video {video_id}: explicit audio_language={default_audio_language} (not English)")
+                        continue
+                    
+                    # Check 2: If no language tags, check title/description for non-English indicators
+                    # Common non-English patterns
+                    non_english_patterns = [
+                        r'[\u4e00-\u9fff]',  # Chinese
+                        r'[\u3040-\u309f\u30a0-\u30ff]',  # Japanese
+                        r'[\u0400-\u04ff]',  # Cyrillic
+                        r'[\u0600-\u06ff]',  # Arabic
+                        r'[\u0590-\u05ff]',  # Hebrew
+                        r'[\u0e00-\u0e7f]',  # Thai
+                        r'[\u1100-\u11ff\uac00-\ud7af]',  # Korean
+                    ]
+                    
+                    import re
+                    has_non_english = False
+                    for pattern in non_english_patterns:
+                        if re.search(pattern, title) or re.search(pattern, description):
+                            has_non_english = True
+                            break
+                    
+                    if has_non_english:
+                        logger.info(f"Skipping video {video_id}: detected non-English characters in title/description")
+                        continue
+                    
+                    # Check 3: If language is not set, require at least some English indicators
+                    # (common English words or hashtags)
+                    if not default_language and not default_audio_language:
+                        english_indicators = ['#shorts', 'the', 'and', 'or', 'is', 'are', 'was', 'were', 'this', 'that', 'with', 'from']
+                        has_english_indicators = any(indicator in title or indicator in description for indicator in english_indicators)
+                        # If title/description is very short and has no English indicators, skip
+                        if len(title) < 10 and len(description) < 20 and not has_english_indicators:
+                            logger.info(f"Skipping video {video_id}: no language tags and no clear English indicators")
+                            continue
                     
                     videos.append(VideoMetadata(
                         video_id=video_id,

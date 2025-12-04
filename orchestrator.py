@@ -95,24 +95,50 @@ class BrainrotOrchestrator:
             analyses = []
             all_reference_frames = []  # Collect reference frames for production
             
-            for i, video in enumerate(videos[:10], 1):  # Limit to 10 for MVP
-                logger.info(f"Processing video {i}/{min(10, len(videos))}: {video.video_id}")
+            # Shuffle videos to get variety (but keep top ones)
+            import random
+            # Keep top 5 as-is, shuffle the rest
+            top_videos = videos[:5]
+            rest_videos = videos[5:]
+            random.shuffle(rest_videos)
+            shuffled_videos = top_videos + rest_videos
+            
+            for i, video in enumerate(shuffled_videos[:10], 1):  # Limit to 10 for MVP
+                logger.info(f"Processing video {i}/{min(10, len(shuffled_videos))}: {video.video_id}")
                 
                 try:
                     # Extract
                     extracted = await self.extraction.extract_video_data(video)
+                    
+                    # Verify language using transcript (double-check)
+                    transcript = extracted.get("transcript", [])
+                    if transcript:
+                        transcript_text = " ".join([seg.text for seg in transcript[:10]])  # Check first 10 segments
+                        # Check for non-English characters
+                        import re
+                        non_english_patterns = [
+                            r'[\u4e00-\u9fff]',  # Chinese
+                            r'[\u3040-\u309f\u30a0-\u30ff]',  # Japanese
+                            r'[\u0400-\u04ff]',  # Cyrillic
+                            r'[\u0600-\u06ff]',  # Arabic
+                        ]
+                        has_non_english = any(re.search(pattern, transcript_text) for pattern in non_english_patterns)
+                        if has_non_english:
+                            logger.warning(f"Skipping video {video.video_id} ({video.title[:50]}): transcript contains non-English characters")
+                            continue
                     
                     # Collect reference frames (use from first video with frames)
                     ref_frames = extracted.get("reference_frames", [])
                     if ref_frames and not all_reference_frames:
                         # Use reference frames from the first video that has them
                         all_reference_frames = ref_frames[:4]  # Limit to 4 frames
-                        logger.info(f"Collected {len(all_reference_frames)} reference frames for production")
+                        logger.info(f"Collected {len(all_reference_frames)} reference frames from video {video.video_id} ({video.title[:50]})")
+                        logger.info(f"Reference frame paths: {[rf.frame_path for rf in all_reference_frames]}")
                     
                     # Analyze
                     analysis = await self.analysis.analyze_video(
                         video,
-                        extracted.get("transcript", []),
+                        transcript,
                         ref_frames
                     )
                     analyses.append(analysis)

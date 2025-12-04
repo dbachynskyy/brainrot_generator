@@ -49,6 +49,9 @@ class ProductionAgent:
             # Default to Pika for MVP
             video_path = await self._generate_with_pika(request)
         
+        # Save plot/story structure to text file next to the video
+        self._save_plot_to_file(video_path, request.script)
+        
         return GeneratedVideo(
             video_path=str(video_path),
             script_id=request.script.title,
@@ -109,6 +112,84 @@ class ProductionAgent:
         # Limit length
         return safe_title[:100]
     
+    def _save_plot_to_file(self, video_path: Path, script: Script):
+        """Save plot/story structure to a text file next to the generated video."""
+        try:
+            # Create plot file path (same name as video but with .txt extension)
+            plot_path = video_path.with_suffix('.txt')
+            
+            with open(plot_path, 'w', encoding='utf-8') as f:
+                f.write("=" * 80 + "\n")
+                f.write("VIDEO SCRIPT & PLOT STRUCTURE\n")
+                f.write("=" * 80 + "\n\n")
+                
+                f.write(f"TITLE: {script.title}\n\n")
+                
+                f.write("-" * 80 + "\n")
+                f.write("SCRIPT TEXT\n")
+                f.write("-" * 80 + "\n")
+                f.write(f"{script.script_text}\n\n")
+                
+                f.write("-" * 80 + "\n")
+                f.write("VISUAL STYLE INSTRUCTIONS\n")
+                f.write("-" * 80 + "\n")
+                f.write(f"{script.visual_style_instructions}\n\n")
+                
+                if script.camera_motion:
+                    f.write("-" * 80 + "\n")
+                    f.write("CAMERA MOTION\n")
+                    f.write("-" * 80 + "\n")
+                    for i, motion in enumerate(script.camera_motion, 1):
+                        f.write(f"{i}. {motion}\n")
+                    f.write("\n")
+                
+                if script.shot_list:
+                    f.write("-" * 80 + "\n")
+                    f.write("SHOT LIST\n")
+                    f.write("-" * 80 + "\n")
+                    for i, shot in enumerate(script.shot_list, 1):
+                        f.write(f"\nShot {i}:\n")
+                        if isinstance(shot, dict):
+                            for key, value in shot.items():
+                                f.write(f"  {key}: {value}\n")
+                        else:
+                            f.write(f"  {shot}\n")
+                    f.write("\n")
+                
+                if script.dialogue:
+                    f.write("-" * 80 + "\n")
+                    f.write("DIALOGUE\n")
+                    f.write("-" * 80 + "\n")
+                    for i, line in enumerate(script.dialogue, 1):
+                        if isinstance(line, dict):
+                            speaker = line.get('speaker', 'Unknown')
+                            text = line.get('text', '')
+                            timestamp = line.get('timestamp', '')
+                            f.write(f"{i}. [{timestamp}] {speaker}: {text}\n")
+                        else:
+                            f.write(f"{i}. {line}\n")
+                    f.write("\n")
+                
+                if script.caption_text:
+                    f.write("-" * 80 + "\n")
+                    f.write("CAPTION TEXT\n")
+                    f.write("-" * 80 + "\n")
+                    for i, caption in enumerate(script.caption_text, 1):
+                        f.write(f"{i}. {caption}\n")
+                    f.write("\n")
+                
+                f.write("-" * 80 + "\n")
+                f.write("METADATA\n")
+                f.write("-" * 80 + "\n")
+                f.write(f"Estimated Duration: {script.estimated_duration:.1f} seconds\n")
+                if script.trend_blueprint_id:
+                    f.write(f"Trend Blueprint ID: {script.trend_blueprint_id}\n")
+            
+            logger.info(f"Saved plot/story structure to: {plot_path}")
+            
+        except Exception as e:
+            logger.error(f"Error saving plot to file: {e}", exc_info=True)
+    
     def _image_to_data_uri(self, image_path: Path) -> str:
         """Convert an image file to a data URI for Runway API."""
         import base64
@@ -165,9 +246,14 @@ class ProductionAgent:
             # Convert image to data URI
             prompt_image_uri = self._image_to_data_uri(frame_path)
             logger.info(f"Using reference frame: {frame_path}")
+            logger.warning(f"⚠️  WARNING: Reference frame is from a different video. Runway will try to transform this image to match the script, but results may not match perfectly.")
             
-            # Build prompt text
+            # Build prompt text - make it very descriptive to help Runway transform the image
             prompt_text = self._build_runway_prompt(request)
+            
+            # Enhance prompt to be more explicit about transformation
+            enhanced_prompt = f"Transform this scene to show: {prompt_text}. The image is a starting reference - create a new scene that matches the description."
+            prompt_text = enhanced_prompt
             
             async with httpx.AsyncClient(timeout=300.0) as client:
                 headers = {
@@ -183,9 +269,24 @@ class ProductionAgent:
                     "model": "gen3a_turbo",
                     "promptImage": prompt_image_uri,  # Required: data URI or HTTPS URL
                     "promptText": prompt_text,  # Optional description
-                    "ratio": "768:1280",  # Vertical for Shorts (must be exact format: "768:1280" or "1280:768")
+                    "ratio": "768:1280",  # Vertical for Shorts (must be exact format per API: "768:1280" or "1280:768")
                     "duration": duration
                 }
+                
+                # Log payload details (without full base64 image)
+                logger.info("=" * 80)
+                logger.info("RUNWAY API PAYLOAD SANITY CHECK")
+                logger.info("=" * 80)
+                logger.info(f"Model: {payload['model']}")
+                logger.info(f"Prompt Image: {frame_path} (converted to data URI, length: {len(prompt_image_uri)} chars)")
+                logger.info(f"Prompt Text: {prompt_text[:200]}..." if len(prompt_text) > 200 else f"Prompt Text: {prompt_text}")
+                logger.info(f"Ratio: {payload['ratio']}")
+                logger.info(f"Duration: {payload['duration']} seconds")
+                logger.info(f"Script Title: {request.script.title}")
+                logger.info(f"Script Text: {request.script.script_text[:200]}..." if len(request.script.script_text) > 200 else f"Script Text: {request.script.script_text}")
+                logger.info(f"Visual Style: {request.script.visual_style_instructions[:200]}..." if len(request.script.visual_style_instructions) > 200 else f"Visual Style: {request.script.visual_style_instructions}")
+                logger.info(f"Reference Frame Source: {frame_path}")
+                logger.info("=" * 80)
                 
                 logger.info(f"Submitting Runway image_to_video request (duration: {duration}s)...")
                 response = await client.post(
@@ -233,24 +334,47 @@ class ProductionAgent:
         return output_path
     
     def _build_runway_prompt(self, request: ProductionRequest) -> str:
-        """Build a prompt for Runway from the production request."""
+        """Build a detailed prompt for Runway from the production request."""
         script = request.script
         
+        # Build a comprehensive prompt that describes the scene
         prompt_parts = []
         
-        if request.style_prompt:
-            prompt_parts.append(request.style_prompt)
-        
+        # Start with the main script/story
         if script.script_text:
-            prompt_parts.append(script.script_text[:300])
+            prompt_parts.append(f"Scene: {script.script_text}")
         
+        # Add visual style details
         if script.visual_style_instructions:
             prompt_parts.append(f"Visual style: {script.visual_style_instructions}")
         
+        # Add camera motion if specified
+        if request.camera_motion_instructions:
+            prompt_parts.append(f"Camera movement: {request.camera_motion_instructions}")
+        
+        # Add shot descriptions if available
+        if script.shot_list:
+            shot_descriptions = []
+            for shot in script.shot_list[:3]:  # Limit to first 3 shots
+                if isinstance(shot, dict):
+                    desc = shot.get('description', '')
+                    if desc:
+                        shot_descriptions.append(desc)
+                elif isinstance(shot, str):
+                    shot_descriptions.append(shot)
+            if shot_descriptions:
+                prompt_parts.append(f"Key moments: {'; '.join(shot_descriptions)}")
+        
+        # Combine all parts
         prompt = ". ".join(prompt_parts)
         
-        if len(prompt) > 600:
-            prompt = prompt[:600] + "..."
+        # Ensure prompt is descriptive but not too long
+        if len(prompt) > 500:
+            prompt = prompt[:500] + "..."
+        
+        # If prompt is too short, add more context
+        if len(prompt) < 50:
+            prompt = f"{script.title}. {script.script_text[:200]}"
         
         return prompt
     

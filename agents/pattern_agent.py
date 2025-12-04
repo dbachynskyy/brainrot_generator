@@ -86,6 +86,25 @@ class PatternAgent:
         # Calculate confidence score
         confidence = min(len(analyses) / 10.0, 1.0)  # More samples = higher confidence
         
+        # Ensure cta and meme_archetype are strings (handle case where LLM returns list/dict)
+        cta = cta_analysis.get("cta", "")
+        if isinstance(cta, list):
+            cta = ", ".join(str(item) for item in cta) if cta else ""
+        elif isinstance(cta, dict):
+            import json
+            cta = json.dumps(cta, indent=2)
+        elif not isinstance(cta, str):
+            cta = str(cta) if cta else ""
+        
+        meme_archetype = cta_analysis.get("archetype", "")
+        if isinstance(meme_archetype, list):
+            meme_archetype = ", ".join(str(item) for item in meme_archetype) if meme_archetype else ""
+        elif isinstance(meme_archetype, dict):
+            import json
+            meme_archetype = json.dumps(meme_archetype, indent=2)
+        elif not isinstance(meme_archetype, str):
+            meme_archetype = str(meme_archetype) if meme_archetype else ""
+        
         blueprint = TrendBlueprint(
             trend_name=f"{category.value}_trend",
             trend_category=category,
@@ -94,8 +113,8 @@ class PatternAgent:
             hook_words=hook_words,
             common_plot_arcs=[arc[0] for arc in common_arcs],
             editing_timing_patterns=editing_patterns,
-            cta=cta_analysis.get("cta"),
-            meme_archetype=cta_analysis.get("archetype"),
+            cta=cta,
+            meme_archetype=meme_archetype,
             visual_style={
                 "style": common_style,
                 "common_colors": self._extract_common_colors(analyses),
@@ -210,15 +229,17 @@ Respond in JSON:
         
         prompt = f"""Based on these video analyses, identify:
 
-1. Common call-to-action (CTA) patterns
-2. Meme archetype if applicable
+1. Common call-to-action (CTA) patterns - Provide a TEXT DESCRIPTION as a STRING, not an object or list
+2. Meme archetype if applicable - Provide a TEXT DESCRIPTION as a STRING, not an object or list
 
 {summary}
 
+IMPORTANT: Both "cta" and "archetype" fields must be STRING values, not arrays or objects.
+
 Respond in JSON:
 {{
-    "cta": "call to action description",
-    "archetype": "meme archetype if applicable"
+    "cta": "A clear text description of the call to action pattern as a single string",
+    "archetype": "A clear text description of the meme archetype as a single string, or empty string if not applicable"
 }}"""
         
         try:

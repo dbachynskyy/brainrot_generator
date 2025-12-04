@@ -65,12 +65,21 @@ class AnalysisAgent:
         audio_style = await self._analyze_audio_style(transcript_text, video.description)
         
         # Build analysis result
+        # Ensure plot_structure is a string (handle case where LLM returns dict)
+        plot_structure = plot_analysis.get("structure", "")
+        if isinstance(plot_structure, dict):
+            # Convert dict to string representation
+            import json
+            plot_structure = json.dumps(plot_structure, indent=2)
+        elif not isinstance(plot_structure, str):
+            plot_structure = str(plot_structure)
+        
         analysis = VideoAnalysis(
             video_id=video.video_id,
             hook_type=hook_analysis.get("type", HookType.OTHER),
             hook_text=hook_analysis.get("text"),
             hook_duration=hook_analysis.get("duration", 0.0),
-            plot_structure=plot_analysis.get("structure", ""),
+            plot_structure=plot_structure,
             story_arc=plot_analysis.get("arc", ""),
             tone=plot_analysis.get("tone", ""),
             emotion=plot_analysis.get("emotion", ""),
@@ -153,14 +162,16 @@ Description: "{description}"
 Transcript: "{transcript_text[:1000]}"
 
 Determine:
-1. Plot structure (setup, conflict, resolution, etc.)
-2. Story arc type
-3. Overall tone
-4. Primary emotion
+1. Plot structure - Provide a TEXT DESCRIPTION of the plot structure (setup, conflict, resolution, etc.). This must be a STRING, not an object.
+2. Story arc type - The type of story arc
+3. Overall tone - The tone of the video
+4. Primary emotion - The primary emotion conveyed
+
+IMPORTANT: The "structure" field must be a STRING description, not a JSON object.
 
 Respond in JSON:
 {{
-    "structure": "plot structure description",
+    "structure": "A clear text description of the plot structure as a single string",
     "arc": "story arc type",
     "tone": "tone description",
     "emotion": "primary emotion"
