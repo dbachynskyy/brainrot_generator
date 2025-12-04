@@ -4,10 +4,17 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 from pathlib import Path
 
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+try:
+    from google.oauth2.credentials import Credentials
+    from google_auth_oauthlib.flow import InstalledAppFlow
+    from googleapiclient.discovery import build
+    from googleapiclient.http import MediaFileUpload
+except ImportError:
+    # Optional dependency
+    Credentials = None
+    InstalledAppFlow = None
+    build = None
+    MediaFileUpload = None
 
 from config import settings
 from models import GeneratedVideo, PublishingMetadata, VideoMetadata
@@ -18,8 +25,10 @@ logger = logging.getLogger(__name__)
 class PublishingAgent:
     """Publishes videos to YouTube, TikTok, Instagram Reels."""
     
-    def __init__(self):
+    def __init__(self, test_output_dir: str = "data/test_published"):
         self.youtube_service = None
+        self.test_output_dir = Path(test_output_dir)
+        self.test_output_dir.mkdir(parents=True, exist_ok=True)
         self._initialize_youtube()
         
     def _initialize_youtube(self):
@@ -48,6 +57,12 @@ class PublishingAgent:
         """
         logger.info(f"Publishing video: {video.video_path}")
         
+        # Check if we're in test mode
+        if settings.brainrot_dev.lower() == "test":
+            logger.info("TEST MODE: Saving video locally instead of uploading")
+            return await self._save_for_test(video, metadata)
+        
+        # Production mode - actually publish
         results = {}
         
         for platform in metadata.platforms:
@@ -238,4 +253,65 @@ Respond in JSON:
                 hashtags=[f"#{trend_category}", "#shorts", "#viral"],
                 platforms=["youtube"]
             )
+    
+    async def _save_for_test(
+        self,
+        video: GeneratedVideo,
+        metadata: PublishingMetadata
+    ) -> Dict[str, Any]:
+        """Save video locally in test mode with metadata."""
+        import shutil
+        import json
+        
+        # Create a safe filename from the title
+        safe_title = "".join(c for c in metadata.title if c.isalnum() or c in (' ', '-', '_')).rstrip()
+        safe_title = safe_title.replace(' ', '_')[:50]  # Limit length
+        
+        # Copy video to test output directory
+        video_filename = f"{safe_title}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
+        test_video_path = self.test_output_dir / video_filename
+        
+        try:
+            # Copy the video file
+            shutil.copy2(video.video_path, test_video_path)
+            logger.info(f"Saved test video to: {test_video_path}")
+            
+            # Save metadata as JSON
+            metadata_filename = f"{safe_title}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_metadata.json"
+            metadata_path = self.test_output_dir / metadata_filename
+            
+            metadata_dict = {
+                "title": metadata.title,
+                "description": metadata.description,
+                "hashtags": metadata.hashtags,
+                "platforms": metadata.platforms,
+                "video_path": str(test_video_path),
+                "original_video_path": video.video_path,
+                "script_id": video.script_id,
+                "generator_used": video.generator_used,
+                "saved_at": datetime.now().isoformat(),
+                "brainrot_dev": "test"
+            }
+            
+            with open(metadata_path, 'w', encoding='utf-8') as f:
+                json.dump(metadata_dict, f, indent=2, ensure_ascii=False)
+            
+            logger.info(f"Saved metadata to: {metadata_path}")
+            
+            return {
+                "status": "test_mode",
+                "message": "Video saved locally (test mode - no upload)",
+                "video_path": str(test_video_path),
+                "metadata_path": str(metadata_path),
+                "platforms": metadata.platforms,
+                "would_publish_to": metadata.platforms
+            }
+            
+        except Exception as e:
+            logger.error(f"Error saving test video: {e}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "message": "Failed to save video in test mode"
+            }
 

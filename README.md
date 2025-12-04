@@ -54,6 +54,15 @@ cp .env.example .env
 # Edit .env with your API keys
 ```
 
+### Environment Configuration
+
+**Important**: Set `BRAINROT_DEV=test` in your `.env` file for testing. In test mode:
+- Videos are saved locally to `data/test_published/` instead of being uploaded
+- Metadata is saved as JSON files alongside videos
+- No actual publishing occurs (safe for testing)
+
+Set `BRAINROT_DEV=prod` when ready to actually publish to platforms.
+
 ### Required API Keys
 
 Minimum required:
@@ -232,6 +241,9 @@ brainrot_generator/
 
 Edit `config.py` or set environment variables:
 
+- `BRAINROT_DEV` - Set to `"test"` or `"prod"` (default: `"test"`)
+  - **test**: Videos saved locally to `data/test_published/` with metadata JSON
+  - **prod**: Videos actually published to platforms
 - `MAX_VIDEOS_TO_SCRAPE` - Maximum videos to discover (default: 50)
 - `MIN_GROWTH_RATE` - Minimum weekly growth rate (default: 0.20 = 20%)
 - `FRAME_EXTRACTION_INTERVAL` - Seconds between frame extractions (default: 0.5)

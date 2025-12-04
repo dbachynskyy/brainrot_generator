@@ -25,6 +25,7 @@ class HookType(str, Enum):
     FUNNY_POV = "funny_pov"
     QUESTION = "question"
     VISUAL_SHOCK = "visual_shock"
+    OTHER = "other"
 
 
 class VideoMetadata(BaseModel):

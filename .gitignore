@@ -47,6 +47,10 @@ data/
 *.wav
 *.mp3
 
+# Test published videos (keep structure but ignore content)
+data/test_published/*.mp4
+data/test_published/*.json
+
 # Logs
 *.log
 logs/

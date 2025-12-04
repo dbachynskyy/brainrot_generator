@@ -87,12 +87,13 @@ class BrainrotOrchestrator:
             videos = await self.discovery.discover_trending_shorts(
                 max_videos=max_videos or settings.max_videos_to_scrape
             )
-            results["discovered_videos"] = [v.dict() for v in videos]
+            results["discovered_videos"] = [v.model_dump() for v in videos]
             logger.info(f"Discovered {len(videos)} trending videos")
             
             # Step 2: Extraction & Analysis
             logger.info("Step 2: Extracting and analyzing videos...")
             analyses = []
+            all_reference_frames = []  # Collect reference frames for production
             
             for i, video in enumerate(videos[:10], 1):  # Limit to 10 for MVP
                 logger.info(f"Processing video {i}/{min(10, len(videos))}: {video.video_id}")
@@ -101,11 +102,18 @@ class BrainrotOrchestrator:
                     # Extract
                     extracted = await self.extraction.extract_video_data(video)
                     
+                    # Collect reference frames (use from first video with frames)
+                    ref_frames = extracted.get("reference_frames", [])
+                    if ref_frames and not all_reference_frames:
+                        # Use reference frames from the first video that has them
+                        all_reference_frames = ref_frames[:4]  # Limit to 4 frames
+                        logger.info(f"Collected {len(all_reference_frames)} reference frames for production")
+                    
                     # Analyze
                     analysis = await self.analysis.analyze_video(
                         video,
                         extracted.get("transcript", []),
-                        extracted.get("reference_frames", [])
+                        ref_frames
                     )
                     analyses.append(analysis)
                     
@@ -113,13 +121,13 @@ class BrainrotOrchestrator:
                     logger.error(f"Error processing video {video.video_id}: {e}")
                     continue
             
-            results["analyses"] = [a.dict() for a in analyses]
+            results["analyses"] = [a.model_dump() for a in analyses]
             logger.info(f"Analyzed {len(analyses)} videos")
             
             # Step 3: Pattern Identification
             logger.info("Step 3: Identifying patterns...")
             blueprints = await self.pattern.identify_patterns(analyses)
-            results["blueprints"] = [b.dict() for b in blueprints]
+            results["blueprints"] = [b.model_dump() for b in blueprints]
             logger.info(f"Identified {len(blueprints)} trend blueprints")
             
             if not generate_video or not blueprints:
@@ -131,21 +139,22 @@ class BrainrotOrchestrator:
             # Use the highest confidence blueprint
             best_blueprint = max(blueprints, key=lambda b: b.confidence_score)
             script = await self.content_gen.generate_script(best_blueprint, brand_style)
-            results["generated_script"] = script.dict()
+            results["generated_script"] = script.model_dump()
             logger.info(f"Generated script: {script.title}")
             
             # Step 5: Production
             logger.info("Step 5: Generating video...")
+            logger.info(f"Using {len(all_reference_frames)} reference frames for video generation")
             production_request = ProductionRequest(
                 script=script,
-                reference_frames=[],  # Would use extracted references
+                reference_frames=all_reference_frames,  # Use extracted reference frames
                 style_prompt=script.visual_style_instructions,
                 camera_motion_instructions=", ".join(script.camera_motion),
                 generator_preference=None  # Auto-select
             )
             
             generated_video = await self.production.generate_video(production_request)
-            results["generated_video"] = generated_video.dict()
+            results["generated_video"] = generated_video.model_dump()
             logger.info(f"Generated video: {generated_video.video_path}")
             
             # Step 6: Publishing (optional)

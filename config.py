@@ -7,9 +7,9 @@ class Settings(BaseSettings):
     """Application settings."""
     
     # API Keys
-    openai_api_key: str
+    openai_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
-    youtube_api_key: str
+    youtube_api_key: Optional[str] = None
     assemblyai_api_key: Optional[str] = None
     
     # Video Generation APIs
@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     
     # Configuration
+    brainrot_dev: str = "test"  # "test" or "prod" - in test mode, videos are saved locally and not uploaded
     log_level: str = "INFO"
     max_videos_to_scrape: int = 50
     min_growth_rate: float = 0.20
@@ -45,6 +46,8 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = False
+        # Map environment variable - allow both ENVIRONMENT and BRAINROT_DEV
+        extra = "ignore"  # Ignore extra fields from .env
 
 
 settings = Settings()

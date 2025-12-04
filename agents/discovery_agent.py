@@ -22,11 +22,18 @@ class DiscoveryAgent:
     """Discovers trending YouTube Shorts and tracks growth metrics."""
     
     def __init__(self):
-        if build:
-            self.youtube_api = build('youtube', 'v3', developerKey=settings.youtube_api_key)
+        if build and settings.youtube_api_key:
+            try:
+                self.youtube_api = build('youtube', 'v3', developerKey=settings.youtube_api_key)
+            except Exception as e:
+                logger.warning(f"Failed to initialize YouTube API: {e}")
+                self.youtube_api = None
         else:
             self.youtube_api = None
-            logger.warning("Google API client not available")
+            if not build:
+                logger.warning("Google API client not available")
+            elif not settings.youtube_api_key:
+                logger.warning("YouTube API key not configured")
         self.browser: Optional[Browser] = None
         
     async def initialize(self):
@@ -61,23 +68,32 @@ class DiscoveryAgent:
         
         # Strategy 1: Use YouTube API to search for Shorts
         api_videos = await self._search_shorts_via_api(max_videos)
+        logger.info(f"Found {len(api_videos)} videos via YouTube API")
         
         # Strategy 2: Use Playwright to scrape Shorts page for additional data
         scraped_videos = await self._scrape_shorts_page()
+        logger.info(f"Found {len(scraped_videos)} videos via Playwright scraping")
         
         # Combine and deduplicate
         all_videos = self._merge_video_data(api_videos, scraped_videos)
+        logger.info(f"Total unique videos after merge: {len(all_videos)}")
         
         # Filter by growth rate and engagement
-        trending_videos = await self._filter_by_growth_rate(
-            all_videos, 
-            min_growth_rate
-        )
+        # For MVP, use lenient filtering - just remove videos with very low engagement
+        # Skip the complex channel API calls that might be failing
+        trending_videos = [v for v in all_videos if v.view_count > 1000]  # Simple threshold
+        logger.info(f"After simple filtering (views > 1000): {len(trending_videos)} videos remain")
+        
+        # Skip growth rate filtering for MVP - it's too strict and makes too many API calls
+        # Just use view count and virality ranking
         
         # Rank by virality score
         ranked_videos = self._rank_by_virality(trending_videos)
+        logger.info(f"After ranking: {len(ranked_videos)} videos")
         
-        return ranked_videos[:max_videos]
+        result = ranked_videos[:max_videos]
+        logger.info(f"Returning {len(result)} videos (requested max: {max_videos})")
+        return result
     
     async def _search_shorts_via_api(self, max_results: int) -> List[VideoMetadata]:
         """Search for Shorts using YouTube Data API."""
@@ -202,6 +218,11 @@ class DiscoveryAgent:
         """Filter videos by channel growth rate."""
         filtered = []
         
+        # If YouTube API is not available, skip filtering and return all videos
+        if not self.youtube_api:
+            logger.warning("YouTube API not available, skipping growth rate filtering")
+            return videos
+        
         for video in videos:
             if not video.channel_id:
                 continue
@@ -220,14 +241,18 @@ class DiscoveryAgent:
                     
                     # Calculate growth rate (simplified - would need historical data)
                     # For MVP, use view velocity as proxy
-                    view_velocity = video.view_count / max(
+                    hours_old = max(
                         (datetime.now() - video.upload_time).total_seconds() / 3600, 
                         1
                     )
+                    view_velocity = video.view_count / hours_old
                     
                     # High view velocity indicates trending
-                    if view_velocity > 1000:  # 1000 views/hour threshold
+                    # Lower threshold for MVP - just filter out very low engagement
+                    if view_velocity > 100 or video.view_count > 10000:  # More lenient threshold
                         filtered.append(video)
+                    else:
+                        logger.debug(f"Filtered out {video.video_id}: velocity={view_velocity:.1f}, views={video.view_count}")
                         
             except Exception as e:
                 logger.debug(f"Error checking growth rate for {video.video_id}: {e}")
@@ -240,7 +265,15 @@ class DiscoveryAgent:
         def virality_score(video: VideoMetadata) -> float:
             """Calculate virality score."""
             # Factors: views, likes, recency, engagement rate
-            hours_old = max((datetime.now() - video.upload_time).total_seconds() / 3600, 1)
+            # Handle timezone-aware vs naive datetimes
+            now = datetime.now(video.upload_time.tzinfo) if video.upload_time.tzinfo else datetime.now()
+            upload_time = video.upload_time.replace(tzinfo=None) if video.upload_time.tzinfo and not now.tzinfo else video.upload_time
+            if now.tzinfo and not upload_time.tzinfo:
+                upload_time = upload_time.replace(tzinfo=now.tzinfo)
+            elif not now.tzinfo and upload_time.tzinfo:
+                now = now.replace(tzinfo=upload_time.tzinfo)
+            
+            hours_old = max((now - upload_time).total_seconds() / 3600, 1)
             view_velocity = video.view_count / hours_old
             engagement_rate = video.like_count / max(video.view_count, 1)
             

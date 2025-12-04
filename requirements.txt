@@ -33,10 +33,10 @@ langchain==0.0.350
 langchain-openai==0.0.2
 llama-index==0.9.13
 transformers==4.35.2
-torch==2.1.1
-torchvision==0.16.1
-clip-by-openai==1.0
-rembg==2.0.50
+torch>=2.2.0
+torchvision>=0.17.0
+clip-by-openai>=1.0.1
+rembg>=2.0.55
 
 # Computer Vision
 segment-anything==1.0
@@ -58,5 +58,5 @@ python-multipart==0.0.6
 
 # Publishing APIs
 google-auth==2.24.0
-tiktok-api==1.0.0
+tiktok-api>=0.10.2  # Note: May have compatibility issues with Python 3.12+
 

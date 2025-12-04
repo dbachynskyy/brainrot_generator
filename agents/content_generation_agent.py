@@ -49,8 +49,8 @@ class ContentGenerationAgent:
                         "content": prompt
                     }
                 ],
-                temperature=0.8,  # Higher creativity
-                response_format={"type": "json_object"}
+                temperature=0.8  # Higher creativity
+                # Note: response_format not supported with all models
             )
             
             result_text = response.choices[0].message.content

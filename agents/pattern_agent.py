@@ -1,5 +1,6 @@
 """Pattern Agent - Identifies patterns and creates trend blueprints."""
 import logging
+import json
 from typing import List, Dict, Any
 from collections import Counter, defaultdict
 import statistics
